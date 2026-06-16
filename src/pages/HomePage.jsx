@@ -1,4 +1,3 @@
-import { useState, useEffect } from 'react';
 import { useUser } from '../context/UserContext';
 import { useData } from '../context/DataContext';
 import { calcGestation, getSupplementPlan, getBabySize } from '../utils/gestation';
@@ -8,9 +7,6 @@ import Card from '../components/Card';
 export default function HomePage({ navigate }) {
   const { user } = useUser();
   const { checkups, getDailyTaskByDate } = useData();
-  const [gest, setGest] = useState(null);
-
-  useEffect(() => { if (user?.lmp) setGest(calcGestation(user.lmp)); }, [user]);
 
   if (!user || !user.lmp) {
     return (
@@ -23,6 +19,9 @@ export default function HomePage({ navigate }) {
       </Card>
     );
   }
+
+  // 直接计算，不再依赖 useEffect + state，避免渲染时拿到空值
+  const gest = calcGestation(user.lmp);
 
   const progress   = Math.min(gest.week / 40 * 100, 100);
   const today      = new Date();
