@@ -11,7 +11,7 @@ export default function HospitalBagPage() {
   }, [isReady]);
 
   async function toggle(item) {
-    await updateHospitalBagItem(item._id, { checked: !item.checked });
+    await updateHospitalBagItem(item.id, { checked: !item.checked });
   }
 
   const groups = HOSPITAL_BAG.map(cat => ({
@@ -28,7 +28,7 @@ export default function HospitalBagPage() {
       {groups.map(g => (
         <Card key={g.category} title={`${g.category}（${g.its.filter(i => i.checked).length}/${g.its.length}）`}>
           {g.its.map(item => (
-            <div key={item._id} onClick={() => toggle(item)}
+            <div key={item.id} onClick={() => toggle(item)}
               style={{ display: 'flex', alignItems: 'center', padding: '10px 0', cursor: 'pointer', borderBottom: '1px solid #FFF5F5' }}>
               <div style={{
                 width: 24, height: 24, borderRadius: 6, border: '2px solid #FFD0D0',

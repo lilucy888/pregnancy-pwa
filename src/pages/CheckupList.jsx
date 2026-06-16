@@ -11,8 +11,7 @@ export default function CheckupList({ navigate }) {
   }, [isReady]);
 
   function openDetail(item) {
-    // 传 _id（Firestore 文档 ID）
-    navigate('checkupDetail', { title: item.title, id: item._id });
+    navigate('checkupDetail', { title: item.title, id: item.id });
   }
 
   const sorted = [...checkups].sort((a, b) => (a.week || 0) - (b.week || 0));
@@ -23,7 +22,7 @@ export default function CheckupList({ navigate }) {
         <div style={{ position: 'relative', paddingLeft: 20 }}>
           <div style={{ position: 'absolute', left: 6, top: 0, bottom: 0, width: 2, background: '#FFE0E0' }} />
           {sorted.map(c => (
-            <div key={c._id} onClick={() => openDetail(c)}
+            <div key={c.id} onClick={() => openDetail(c)}
               style={{ position: 'relative', padding: '12px 0 12px 24px', cursor: 'pointer', borderBottom: '1px solid #FFF5F5' }}>
               <div style={{ position: 'absolute', left: -14, top: 16, width: 14, height: 14, borderRadius: '50%',
                             background: c.status === 'done' ? '#7ECB7E' : c.status === 'skipped' ? '#E88080' : '#F5C96A',

@@ -9,8 +9,7 @@ export default function CheckupDetail({ id, goBack }) {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    // id 即 _id（Firestore 文档 ID）
-    const found = checkups.find(c => c._id === id);
+    const found = checkups.find(c => c.id === id);
     if (found) {
       setItem(found);
       setForm({
@@ -34,7 +33,7 @@ export default function CheckupDetail({ id, goBack }) {
           week:   item.week,
         });
       }
-      await updateCheckup(item._id, { ...form, status: 'done' });
+      await updateCheckup(item.id, { ...form, status: 'done' });
       alert('✅ 保存成功');
       goBack();
     } finally {
@@ -44,7 +43,7 @@ export default function CheckupDetail({ id, goBack }) {
 
   async function markSkipped() {
     if (!confirm('确定将此产检标记为已跳过？')) return;
-    await updateCheckup(item._id, { status: 'skipped' });
+    await updateCheckup(item.id, { status: 'skipped' });
     goBack();
   }
 

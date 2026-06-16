@@ -1,93 +1,109 @@
 /**
- * DataContext - 核心数据层
- * 用 Firestore 替代 localStorage，两台手机实时共享同一份数据
- * 家庭码（familyCode）存储在设备 localStorage，作为 Firestore 路径前缀
+ * DataContext — 核心数据层（Supabase 版）
+ * 用 Supabase 替代 Firebase，国内可直接访问，两台手机实时共享数据
+ * 对外接口保持不变：其他页面组件无需修改
  */
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
-import { firestoreDb } from '../firebase';
-import {
-  collection, doc, onSnapshot,
-  setDoc, addDoc, updateDoc, writeBatch
-} from 'firebase/firestore';
+import { supabase } from '../supabase';
 import { CHECKUP_SCHEDULE, HOSPITAL_BAG } from '../utils/constants';
 import { calcDueDate } from '../utils/gestation';
 
 const DataContext = createContext(null);
 const FAMILY_CODE_KEY = 'pregnancy_family_code';
 
+const TABLES = ['checkups', 'daily_tasks', 'weight_records', 'fetal_movements', 'hospital_bag'];
+
 export function DataProvider({ children }) {
   const [familyCode, setFamilyCodeState] = useState(
     () => localStorage.getItem(FAMILY_CODE_KEY) || ''
   );
-  const [isReady, setIsReady]           = useState(false);
-  const [user, setUser]                 = useState(null);
-  const [checkups, setCheckups]         = useState([]);
-  const [dailyTasks, setDailyTasks]     = useState([]);
-  const [weightRecords, setWeightRecords]     = useState([]);
-  const [fetalMovements, setFetalMovements]   = useState([]);
+  const [isReady, setIsReady] = useState(false);
+  const [user, setUser] = useState(null);
+  const [checkups, setCheckups] = useState([]);
+  const [dailyTasks, setDailyTasks] = useState([]);
+  const [weightRecords, setWeightRecords] = useState([]);
+  const [fetalMovements, setFetalMovements] = useState([]);
   const [hospitalBagItems, setHospitalBagItems] = useState([]);
-  const [appSettings, setAppSettings]   = useState({});
+  const [appSettings, setAppSettings] = useState({});
 
-  // 保存家庭码到 localStorage 并更新 state
+  const setterMap = useRef({
+    checkups: setCheckups,
+    daily_tasks: setDailyTasks,
+    weight_records: setWeightRecords,
+    fetal_movements: setFetalMovements,
+    hospital_bag: setHospitalBagItems,
+  });
+
   const setFamilyCode = useCallback((code) => {
     const safe = code.trim().toLowerCase().replace(/\s+/g, '_');
     localStorage.setItem(FAMILY_CODE_KEY, safe);
     setFamilyCodeState(safe);
   }, []);
 
-  // ── 订阅 Firestore，familyCode 变化时重新订阅 ──
+  // ── 加载 + 订阅实时变化 ──
   useEffect(() => {
     if (!familyCode) { setIsReady(false); return; }
 
+    let active = true;
     setIsReady(false);
-    // 重置所有数据，避免旧数据残留
     setUser(null); setCheckups([]); setDailyTasks([]);
     setWeightRecords([]); setFetalMovements([]);
     setHospitalBagItems([]); setAppSettings({});
 
-    const famDoc = doc(firestoreDb, 'families', familyCode);
-    const col    = (name) => collection(firestoreDb, 'families', familyCode, name);
+    async function refetchTable(table) {
+      const { data, error } = await supabase
+        .from(table)
+        .select('*')
+        .eq('family_code', familyCode);
+      if (!active) return;
+      if (error) { console.error(`fetch ${table} failed`, error); return; }
+      setterMap.current[table](data || []);
+    }
 
-    // 用闭包跟踪首次加载
-    const loaded = { checkups: false, daily_tasks: false, weight_records: false,
-                     fetal_movements: false, hospital_bag: false, family_doc: false };
-    const markLoaded = (key) => {
-      loaded[key] = true;
-      if (Object.values(loaded).every(Boolean)) setIsReady(true);
-    };
+    async function loadAll() {
+      // 确保 family 行存在
+      const { data: famRow } = await supabase
+        .from('families')
+        .select('*')
+        .eq('family_code', familyCode)
+        .maybeSingle();
 
-    const unsubs = [
-      onSnapshot(col('checkups'), snap => {
-        setCheckups(snap.docs.map(d => ({ ...d.data(), _id: d.id })));
-        markLoaded('checkups');
-      }),
-      onSnapshot(col('daily_tasks'), snap => {
-        setDailyTasks(snap.docs.map(d => ({ ...d.data(), _id: d.id })));
-        markLoaded('daily_tasks');
-      }),
-      onSnapshot(col('weight_records'), snap => {
-        setWeightRecords(snap.docs.map(d => ({ ...d.data(), _id: d.id })));
-        markLoaded('weight_records');
-      }),
-      onSnapshot(col('fetal_movements'), snap => {
-        setFetalMovements(snap.docs.map(d => ({ ...d.data(), _id: d.id })));
-        markLoaded('fetal_movements');
-      }),
-      onSnapshot(col('hospital_bag'), snap => {
-        setHospitalBagItems(snap.docs.map(d => ({ ...d.data(), _id: d.id })));
-        markLoaded('hospital_bag');
-      }),
-      onSnapshot(famDoc, snap => {
-        if (snap.exists()) {
-          const data = snap.data();
-          if (data.user)     setUser(data.user);
-          if (data.settings) setAppSettings(data.settings);
+      if (!famRow) {
+        await supabase.from('families').insert({ family_code: familyCode, user_data: {}, settings: {} });
+      } else if (active) {
+        setUser(famRow.user_data || null);
+        setAppSettings(famRow.settings || {});
+      }
+
+      await Promise.all(TABLES.map(refetchTable));
+      if (active) setIsReady(true);
+    }
+
+    loadAll();
+
+    // 实时订阅：任意一台手机改动后，自动刷新对应表
+    const channel = supabase
+      .channel(`family-${familyCode}`)
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'families', filter: `family_code=eq.${familyCode}` },
+        (payload) => {
+          if (payload.new) {
+            setUser(payload.new.user_data || null);
+            setAppSettings(payload.new.settings || {});
+          }
         }
-        markLoaded('family_doc');
-      }),
-    ];
+      );
 
-    return () => unsubs.forEach(u => u());
+    TABLES.forEach(table => {
+      channel.on('postgres_changes',
+        { event: '*', schema: 'public', table, filter: `family_code=eq.${familyCode}` },
+        () => refetchTable(table)
+      );
+    });
+
+    channel.subscribe();
+
+    return () => { active = false; supabase.removeChannel(channel); };
   }, [familyCode]);
 
   // ── 用户信息 ──
@@ -103,41 +119,38 @@ export function DataProvider({ children }) {
       ].join('-');
     }
     setUser(next);
-    await setDoc(doc(firestoreDb, 'families', familyCode), { user: next }, { merge: true });
+    await supabase.from('families').update({ user_data: next }).eq('family_code', familyCode);
   }, [user, familyCode]);
 
   // ── 产检 ──
   const initCheckups = useCallback(async () => {
     if (!familyCode || checkups.length > 0) return;
-    const batch = writeBatch(firestoreDb);
-    CHECKUP_SCHEDULE.forEach(s => {
-      const ref = doc(collection(firestoreDb, 'families', familyCode, 'checkups'));
-      batch.set(ref, {
-        ...s, status: 'pending',
-        weight: '', bloodPressure: '', notes: '', nextDate: '', actualDate: ''
-      });
-    });
-    await batch.commit();
+    const rows = CHECKUP_SCHEDULE.map(s => ({
+      family_code: familyCode,
+      title: s.title,
+      week: s.week,
+      status: 'pending',
+      weight: '',
+      bloodPressure: '',
+      notes: '',
+      nextDate: '',
+      actualDate: '',
+    }));
+    await supabase.from('checkups').insert(rows);
   }, [familyCode, checkups.length]);
 
-  const updateCheckup = useCallback(async (docId, updates) => {
+  const updateCheckup = useCallback(async (id, updates) => {
     if (!familyCode) return;
-    await updateDoc(doc(firestoreDb, 'families', familyCode, 'checkups', docId), updates);
+    await supabase.from('checkups').update(updates).eq('id', id);
   }, [familyCode]);
 
   // ── 每日打卡 ──
   const saveDailyTask = useCallback(async (task) => {
     if (!familyCode) return;
-    const existing = dailyTasks.find(t => t.date === task.date);
-    if (existing) {
-      await updateDoc(
-        doc(firestoreDb, 'families', familyCode, 'daily_tasks', existing._id),
-        task
-      );
-    } else {
-      await addDoc(collection(firestoreDb, 'families', familyCode, 'daily_tasks'), task);
-    }
-  }, [familyCode, dailyTasks]);
+    await supabase
+      .from('daily_tasks')
+      .upsert({ family_code: familyCode, ...task }, { onConflict: 'family_code,date' });
+  }, [familyCode]);
 
   const getDailyTaskByDate = useCallback((date) => {
     return dailyTasks.find(t => t.date === date) || null;
@@ -146,41 +159,37 @@ export function DataProvider({ children }) {
   // ── 体重记录 ──
   const addWeightRecord = useCallback(async (record) => {
     if (!familyCode) return;
-    await addDoc(collection(firestoreDb, 'families', familyCode, 'weight_records'), record);
+    await supabase.from('weight_records').insert({ family_code: familyCode, ...record });
   }, [familyCode]);
 
   // ── 胎动 ──
   const addFetalMovement = useCallback(async (record) => {
     if (!familyCode) return;
-    await addDoc(collection(firestoreDb, 'families', familyCode, 'fetal_movements'), record);
+    await supabase.from('fetal_movements').insert({ family_code: familyCode, ...record });
   }, [familyCode]);
 
   // ── 待产包 ──
   const initHospitalBag = useCallback(async () => {
     if (!familyCode || hospitalBagItems.length > 0) return;
-    const batch = writeBatch(firestoreDb);
+    const rows = [];
     HOSPITAL_BAG.forEach(cat => {
       cat.items.forEach(name => {
-        const ref = doc(collection(firestoreDb, 'families', familyCode, 'hospital_bag'));
-        batch.set(ref, { category: cat.category, name, checked: false });
+        rows.push({ family_code: familyCode, category: cat.category, name, checked: false });
       });
     });
-    await batch.commit();
+    await supabase.from('hospital_bag').insert(rows);
   }, [familyCode, hospitalBagItems.length]);
 
-  const updateHospitalBagItem = useCallback(async (docId, updates) => {
+  const updateHospitalBagItem = useCallback(async (id, updates) => {
     if (!familyCode) return;
-    await updateDoc(
-      doc(firestoreDb, 'families', familyCode, 'hospital_bag', docId),
-      updates
-    );
+    await supabase.from('hospital_bag').update(updates).eq('id', id);
   }, [familyCode]);
 
   // ── 应用设置 ──
   const saveAppSettings = useCallback(async (settings) => {
     if (!familyCode) return;
     setAppSettings(settings);
-    await setDoc(doc(firestoreDb, 'families', familyCode), { settings }, { merge: true });
+    await supabase.from('families').update({ settings }).eq('family_code', familyCode);
   }, [familyCode]);
 
   const value = {
